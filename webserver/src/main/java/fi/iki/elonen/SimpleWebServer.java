@@ -32,6 +32,7 @@ package fi.iki.elonen;
  * OF THE POSSIBILITY OF SUCH DAMAGE.
  * #L%
  */
+
 import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
@@ -67,11 +68,19 @@ public class SimpleWebServer extends NanoHTTPD {
             add("index.htm");
         }
     };
-
+    public final static String ACCESS_CONTROL_ALLOW_HEADER_PROPERTY_NAME =
+            "AccessControlAllowHeader";
+    // explicitly relax visibility to package for tests purposes
+    final static String DEFAULT_ALLOWED_HEADERS = "origin,accept,content-type";
     /**
      * The distribution licence
      */
     private static final String LICENCE;
+    private final static String ALLOWED_METHODS = "GET, POST, PUT, DELETE, OPTIONS, HEAD";
+    private final static int MAX_AGE = 42 * 60 * 60;
+    private static Map<String, WebServerPlugin> mimeTypeHandlers =
+            new HashMap<String, WebServerPlugin>();
+
     static {
         mimeTypes();
         String text;
@@ -90,7 +99,30 @@ public class SimpleWebServer extends NanoHTTPD {
         LICENCE = text;
     }
 
-    private static Map<String, WebServerPlugin> mimeTypeHandlers = new HashMap<String, WebServerPlugin>();
+    private final boolean quiet;
+    private final String cors;
+    protected List<File> rootDirs;
+
+    public SimpleWebServer(String host, int port, File wwwroot, boolean quiet, String cors) {
+        this(host, port, Collections.singletonList(wwwroot), quiet, cors);
+    }
+
+    public SimpleWebServer(String host, int port, File wwwroot, boolean quiet) {
+        this(host, port, Collections.singletonList(wwwroot), quiet, null);
+    }
+
+    public SimpleWebServer(String host, int port, List<File> wwwroots, boolean quiet) {
+        this(host, port, wwwroots, quiet, null);
+    }
+
+    public SimpleWebServer(String host, int port, List<File> wwwroots, boolean quiet, String cors) {
+        super(host, port);
+        this.quiet = quiet;
+        this.cors = cors;
+        this.rootDirs = new ArrayList<File>(wwwroots);
+
+        init();
+    }
 
     /**
      * Starts as a standalone file server and waits for Enter.
@@ -150,7 +182,9 @@ public class SimpleWebServer extends NanoHTTPD {
             }
         }
         options.put("home", sb.toString());
-        ServiceLoader<WebServerPluginInfo> serviceLoader = ServiceLoader.load(WebServerPluginInfo.class);
+        // 不太明白这个插件是干啥用的?
+        ServiceLoader<WebServerPluginInfo> serviceLoader =
+                ServiceLoader.load(WebServerPluginInfo.class);
         for (WebServerPluginInfo info : serviceLoader) {
             String[] mimeTypes = info.getMimeTypes();
             for (String mime : mimeTypes) {
@@ -168,10 +202,13 @@ public class SimpleWebServer extends NanoHTTPD {
                 registerPluginForMimeType(indexFiles, mime, info.getWebServerPlugin(mime), options);
             }
         }
+        // 简单地执行了NanoHttpd.start()和NanoHttpd.stop()命令
         ServerRunner.executeInstance(new SimpleWebServer(host, port, rootDirs, quiet, cors));
     }
 
-    protected static void registerPluginForMimeType(String[] indexFiles, String mimeType, WebServerPlugin plugin, Map<String, String> commandLineOptions) {
+    protected static void registerPluginForMimeType(String[] indexFiles, String mimeType,
+                                                    WebServerPlugin plugin,
+                                                    Map<String, String> commandLineOptions) {
         if (mimeType == null || plugin == null) {
             return;
         }
@@ -190,31 +227,10 @@ public class SimpleWebServer extends NanoHTTPD {
         plugin.initialize(commandLineOptions);
     }
 
-    private final boolean quiet;
-
-    private final String cors;
-
-    protected List<File> rootDirs;
-
-    public SimpleWebServer(String host, int port, File wwwroot, boolean quiet, String cors) {
-        this(host, port, Collections.singletonList(wwwroot), quiet, cors);
-    }
-
-    public SimpleWebServer(String host, int port, File wwwroot, boolean quiet) {
-        this(host, port, Collections.singletonList(wwwroot), quiet, null);
-    }
-
-    public SimpleWebServer(String host, int port, List<File> wwwroots, boolean quiet) {
-        this(host, port, wwwroots, quiet, null);
-    }
-
-    public SimpleWebServer(String host, int port, List<File> wwwroots, boolean quiet, String cors) {
-        super(host, port);
-        this.quiet = quiet;
-        this.cors = cors;
-        this.rootDirs = new ArrayList<File>(wwwroots);
-
-        init();
+    public static Response newFixedLengthResponse(IStatus status, String mimeType, String message) {
+        Response response = NanoHTTPD.newFixedLengthResponse(status, mimeType, message);
+        response.addHeader("Accept-Ranges", "bytes");
+        return response;
     }
 
     private boolean canServeUri(String uri, File homeDir) {
@@ -231,8 +247,7 @@ public class SimpleWebServer extends NanoHTTPD {
     }
 
     /**
-     * URL-encodes everything between "/"-characters. Encodes spaces as '%20'
-     * instead of '+'.
+     * URL-encodes everything between "/"-characters. Encodes spaces as '%20' instead of '+'.
      */
     private String encodeUri(String uri) {
         String newUri = "";
@@ -264,15 +279,18 @@ public class SimpleWebServer extends NanoHTTPD {
     }
 
     protected Response getForbiddenResponse(String s) {
-        return newFixedLengthResponse(Response.Status.FORBIDDEN, NanoHTTPD.MIME_PLAINTEXT, "FORBIDDEN: " + s);
+        return newFixedLengthResponse(Response.Status.FORBIDDEN, NanoHTTPD.MIME_PLAINTEXT,
+                "FORBIDDEN: " + s);
     }
 
     protected Response getInternalErrorResponse(String s) {
-        return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, NanoHTTPD.MIME_PLAINTEXT, "INTERNAL ERROR: " + s);
+        return newFixedLengthResponse(Response.Status.INTERNAL_ERROR, NanoHTTPD.MIME_PLAINTEXT,
+                "INTERNAL ERROR: " + s);
     }
 
     protected Response getNotFoundResponse() {
-        return newFixedLengthResponse(Response.Status.NOT_FOUND, NanoHTTPD.MIME_PLAINTEXT, "Error 404, file not found.");
+        return newFixedLengthResponse(Response.Status.NOT_FOUND, NanoHTTPD.MIME_PLAINTEXT,
+                "Error 404, file not found.");
     }
 
     /**
@@ -284,8 +302,10 @@ public class SimpleWebServer extends NanoHTTPD {
     protected String listDirectory(String uri, File f) {
         String heading = "Directory " + uri;
         StringBuilder msg =
-                new StringBuilder("<html><head><title>" + heading + "</title><style><!--\n" + "span.dirname { font-weight: bold; }\n" + "span.filesize { font-size: 75%; }\n"
-                        + "// -->\n" + "</style>" + "</head><body><h1>" + heading + "</h1>");
+                new StringBuilder("<html><head><title>" + heading + "</title><style><!--\n" +
+                        "span.dirname { font-weight: bold; }\n" +
+                        "span.filesize { font-size: 75%; }\n" + "// -->\n" + "</style>" +
+                        "</head><body><h1>" + heading + "</h1>");
 
         String up = null;
         if (uri.length() > 1) {
@@ -295,33 +315,36 @@ public class SimpleWebServer extends NanoHTTPD {
                 up = uri.substring(0, slash + 1);
             }
         }
-
+        // 显示file路径下的所有文件(不包含文件夹)
         List<String> files = Arrays.asList(f.list(new FilenameFilter() {
-
             @Override
             public boolean accept(File dir, String name) {
+                // 实现FilenameFilter接口,用来过滤出普通文件。
                 return new File(dir, name).isFile();
             }
         }));
         Collections.sort(files);
+        // 显示file路径下的所有文件夹(不包含不同文件)
         List<String> directories = Arrays.asList(f.list(new FilenameFilter() {
-
             @Override
             public boolean accept(File dir, String name) {
+                // 实现FilenameFilter接口,用来过滤出文件夹。
                 return new File(dir, name).isDirectory();
             }
         }));
         Collections.sort(directories);
         if (up != null || directories.size() + files.size() > 0) {
-            msg.append("<ul>");
+            msg.append("<ul>"); // <ul>表示无序列表
             if (up != null || directories.size() > 0) {
                 msg.append("<section class=\"directories\">");
-                if (up != null) {
-                    msg.append("<li><a rel=\"directory\" href=\"").append(up).append("\"><span class=\"dirname\">..</span></a></li>");
+                if (up != null) { // 显示上一级目录
+                    msg.append("<li><a rel=\"directory\" href=\"").append(up)
+                            .append("\"><span class=\"dirname\">..</span></a></li>");
                 }
-                for (String directory : directories) {
+                for (String directory : directories) { //显示所有的路径, <li> 表示列表项
                     String dir = directory + "/";
-                    msg.append("<li><a rel=\"directory\" href=\"").append(encodeUri(uri + dir)).append("\"><span class=\"dirname\">").append(dir)
+                    msg.append("<li><a rel=\"directory\" href=\"").append(encodeUri(uri + dir))
+                            .append("\"><span class=\"dirname\">").append(dir)
                             .append("</span></a></li>");
                 }
                 msg.append("</section>");
@@ -329,16 +352,20 @@ public class SimpleWebServer extends NanoHTTPD {
             if (files.size() > 0) {
                 msg.append("<section class=\"files\">");
                 for (String file : files) {
-                    msg.append("<li><a href=\"").append(encodeUri(uri + file)).append("\"><span class=\"filename\">").append(file).append("</span></a>");
+                    msg.append("<li><a href=\"").append(encodeUri(uri + file))
+                            .append("\"><span class=\"filename\">").append(file)
+                            .append("</span></a>");
                     File curFile = new File(f, file);
-                    long len = curFile.length();
+                    long len = curFile.length(); // 用来获取文件大小
                     msg.append("&nbsp;<span class=\"filesize\">(");
                     if (len < 1024) {
                         msg.append(len).append(" bytes");
                     } else if (len < 1024 * 1024) {
-                        msg.append(len / 1024).append(".").append(len % 1024 / 10 % 100).append(" KB");
+                        msg.append(len / 1024).append(".").append(len % 1024 / 10 % 100)
+                                .append(" KB");
                     } else {
-                        msg.append(len / (1024 * 1024)).append(".").append(len % (1024 * 1024) / 10000 % 100).append(" MB");
+                        msg.append(len / (1024 * 1024)).append(".")
+                                .append(len % (1024 * 1024) / 10000 % 100).append(" MB");
                     }
                     msg.append(")</span></li>");
                 }
@@ -350,14 +377,17 @@ public class SimpleWebServer extends NanoHTTPD {
         return msg.toString();
     }
 
-    public static Response newFixedLengthResponse(IStatus status, String mimeType, String message) {
-        Response response = NanoHTTPD.newFixedLengthResponse(status, mimeType, message);
-        response.addHeader("Accept-Ranges", "bytes");
-        return response;
-    }
-
     private Response respond(Map<String, String> headers, IHTTPSession session, String uri) {
         // First let's handle CORS OPTION query
+        // CORS是cross-origin resource sharing的缩写。这种机制允许从别的域名的服务器上获取网页上的受限资源,而不是从
+        // Web服务器上获取。
+        // 一个网页中可以从别的域名中嵌入图片、表单、脚本等各种资源。但是处于安全考虑,网络字体(Web Fonts)和AJAX请求
+        // (XMLHttpRequest)通常会受到限制,只能从与其所在网页相同的域名中获取。"Cross-domain" AJAX请求通常是被禁止的,
+        // 因为它们可以进行高级的请求操作。
+        // CORS就定义了一种在浏览器与服务器之间交互的方式,来确定是否允许cross-origin请求。相比纯same-origin请求,它具有
+        // 更多的灵活度和功能,但又比简单的允许所有的cross-origin请求来得安全。
+        // e.g. --cors=http://appOne.company.com
+        // e.g. --cors="http://appOne.company.com, http://appTwo.company.com"
         Response r;
         if (cors != null && Method.OPTIONS.equals(session.getMethod())) {
             r = new NanoHTTPD.Response(Response.Status.OK, MIME_PLAINTEXT, null, 0);
@@ -368,7 +398,7 @@ public class SimpleWebServer extends NanoHTTPD {
         if (cors != null) {
             r = addCORSHeaders(headers, r, cors);
         }
-        return r;
+        return r; // 这里返回的Response最终会被写入到socket中。
     }
 
     private Response defaultRespond(Map<String, String> headers, IHTTPSession session, String uri) {
@@ -398,8 +428,9 @@ public class SimpleWebServer extends NanoHTTPD {
         File f = new File(homeDir, uri);
         if (f.isDirectory() && !uri.endsWith("/")) {
             uri += "/";
-            Response res =
-                    newFixedLengthResponse(Response.Status.REDIRECT, NanoHTTPD.MIME_HTML, "<html><body>Redirected: <a href=\"" + uri + "\">" + uri + "</a></body></html>");
+            Response res = newFixedLengthResponse(Response.Status.REDIRECT, NanoHTTPD.MIME_HTML,
+                    "<html><body>Redirected: <a href=\"" + uri + "\">" + uri +
+                            "</a></body></html>");
             res.addHeader("Location", uri);
             return res;
         }
@@ -411,7 +442,8 @@ public class SimpleWebServer extends NanoHTTPD {
             if (indexFile == null) {
                 if (f.canRead()) {
                     // No index file, list the directory if it is readable
-                    return newFixedLengthResponse(Response.Status.OK, NanoHTTPD.MIME_HTML, listDirectory(uri, f));
+                    return newFixedLengthResponse(Response.Status.OK, NanoHTTPD.MIME_HTML,
+                            listDirectory(uri, f));
                 } else {
                     return getForbiddenResponse("No directory listing.");
                 }
@@ -461,18 +493,21 @@ public class SimpleWebServer extends NanoHTTPD {
                 return getInternalErrorResponse("given path is not a directory (" + homeDir + ").");
             }
         }
+        // 既然这里的header和uri都是从session中得到的,为啥要单独传入respond中呢?直接传给session行不?
+        // unmodifiableMap就是对header进行保护,返回只读对象。如有被篡改的话,会报UnsupportedOperationException
         return respond(Collections.unmodifiableMap(header), session, uri);
     }
 
     /**
-     * Serves file from homeDir and its' subdirectories (only). Uses only URI,
-     * ignores all headers and HTTP parameters.
+     * Serves file from homeDir and its' subdirectories (only). Uses only URI, ignores all headers
+     * and HTTP parameters.
      */
     Response serveFile(String uri, Map<String, String> header, File file, String mime) {
         Response res;
         try {
             // Calculate etag
-            String etag = Integer.toHexString((file.getAbsolutePath() + file.lastModified() + "" + file.length()).hashCode());
+            String etag = Integer.toHexString(
+                    (file.getAbsolutePath() + file.lastModified() + "" + file.length()).hashCode());
 
             // Support (simple) skipping:
             long startFrom = 0;
@@ -498,13 +533,15 @@ public class SimpleWebServer extends NanoHTTPD {
             boolean headerIfRangeMissingOrMatching = (ifRange == null || etag.equals(ifRange));
 
             String ifNoneMatch = header.get("if-none-match");
-            boolean headerIfNoneMatchPresentAndMatching = ifNoneMatch != null && ("*".equals(ifNoneMatch) || ifNoneMatch.equals(etag));
+            boolean headerIfNoneMatchPresentAndMatching =
+                    ifNoneMatch != null && ("*".equals(ifNoneMatch) || ifNoneMatch.equals(etag));
 
             // Change return code and add Content-Range header when skipping is
             // requested
             long fileLen = file.length();
 
-            if (headerIfRangeMissingOrMatching && range != null && startFrom >= 0 && startFrom < fileLen) {
+            if (headerIfRangeMissingOrMatching && range != null && startFrom >= 0 &&
+                    startFrom < fileLen) {
                 // range request that matches current etag
                 // and the startFrom of the range is satisfiable
                 if (headerIfNoneMatchPresentAndMatching) {
@@ -526,10 +563,12 @@ public class SimpleWebServer extends NanoHTTPD {
                     FileInputStream fis = new FileInputStream(file);
                     fis.skip(startFrom);
 
-                    res = newFixedLengthResponse(Response.Status.PARTIAL_CONTENT, mime, fis, newLen);
+                    res = newFixedLengthResponse(Response.Status.PARTIAL_CONTENT, mime, fis,
+                            newLen);
                     res.addHeader("Accept-Ranges", "bytes");
                     res.addHeader("Content-Length", "" + newLen);
-                    res.addHeader("Content-Range", "bytes " + startFrom + "-" + endAt + "/" + fileLen);
+                    res.addHeader("Content-Range",
+                            "bytes " + startFrom + "-" + endAt + "/" + fileLen);
                     res.addHeader("ETag", etag);
                 }
             } else {
@@ -537,7 +576,8 @@ public class SimpleWebServer extends NanoHTTPD {
                 if (headerIfRangeMissingOrMatching && range != null && startFrom >= fileLen) {
                     // return the size of the file
                     // 4xx responses are not trumped by if-none-match
-                    res = newFixedLengthResponse(Response.Status.RANGE_NOT_SATISFIABLE, NanoHTTPD.MIME_PLAINTEXT, "");
+                    res = newFixedLengthResponse(Response.Status.RANGE_NOT_SATISFIABLE,
+                            NanoHTTPD.MIME_PLAINTEXT, "");
                     res.addHeader("Content-Range", "bytes */" + fileLen);
                     res.addHeader("ETag", etag);
                 } else if (range == null && headerIfNoneMatchPresentAndMatching) {
@@ -569,12 +609,14 @@ public class SimpleWebServer extends NanoHTTPD {
 
     private Response newFixedFileResponse(File file, String mime) throws FileNotFoundException {
         Response res;
-        res = newFixedLengthResponse(Response.Status.OK, mime, new FileInputStream(file), (int) file.length());
+        res = newFixedLengthResponse(Response.Status.OK, mime, new FileInputStream(file),
+                (int) file.length());
         res.addHeader("Accept-Ranges", "bytes");
         return res;
     }
 
-    protected Response addCORSHeaders(Map<String, String> queryHeaders, Response resp, String cors) {
+    protected Response addCORSHeaders(Map<String, String> queryHeaders, Response resp,
+                                      String cors) {
         resp.addHeader("Access-Control-Allow-Origin", cors);
         resp.addHeader("Access-Control-Allow-Headers", calculateAllowHeaders(queryHeaders));
         resp.addHeader("Access-Control-Allow-Credentials", "true");
@@ -589,15 +631,7 @@ public class SimpleWebServer extends NanoHTTPD {
         // but NanoHttpd uses a Map whereas it is possible for requester to send
         // several time the same header
         // let's just use default values for this version
-        return System.getProperty(ACCESS_CONTROL_ALLOW_HEADER_PROPERTY_NAME, DEFAULT_ALLOWED_HEADERS);
+        return System
+                .getProperty(ACCESS_CONTROL_ALLOW_HEADER_PROPERTY_NAME, DEFAULT_ALLOWED_HEADERS);
     }
-
-    private final static String ALLOWED_METHODS = "GET, POST, PUT, DELETE, OPTIONS, HEAD";
-
-    private final static int MAX_AGE = 42 * 60 * 60;
-
-    // explicitly relax visibility to package for tests purposes
-    final static String DEFAULT_ALLOWED_HEADERS = "origin,accept,content-type";
-
-    public final static String ACCESS_CONTROL_ALLOW_HEADER_PROPERTY_NAME = "AccessControlAllowHeader";
 }
