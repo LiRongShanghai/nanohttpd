@@ -9,6 +9,7 @@ import java.util.Map;
 public class App extends NanoHTTPD {
     public App() throws IOException {
         super(8088);
+        // here, "password" is the storepasswd of keystore
         makeSecure(NanoHTTPD.makeSSLSocketFactory(
                 "/keystore.jks",
                 "password".toCharArray()), null);

@@ -1294,6 +1294,9 @@ public abstract class NanoHTTPD {
      * value.
      */
     public enum Method {
+        // 枚举类变量必须是预定义值中的一个。枚举类中可以包含方法和别的变量。java编译器会自动为枚举类
+        // 添加一下方法,例如values()方法。这个方法会返回枚举类中所有值。
+        // 所有enum类都隐式继承java.lang.Enum类,因此不能再继承别的类了。
         GET,
         PUT,
         POST,
